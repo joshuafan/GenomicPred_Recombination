@@ -1,0 +1,63 @@
+---
+title: "Exploratory Analysis of Genomic Prediction / Recombination data"
+output: html_notebook
+---
+
+Import the AlphaSimR package.
+
+```{r}
+library(AlphaSimR)
+```
+
+Read in an example Population RData file.
+
+```{r}
+pop1 <- readRDS("/home/joshua/Documents/GenomicPred_Recombination/all_pops_gen1.RData")
+```
+
+```{r}
+length(pop1)
+```
+
+Note that this is a list of 100 Pop objects (simulation runs). Each Pop object contains 1000 rows (individuals) and 17 features.
+
+```{r}
+pop1_1 <- pop1[[1]]
+pop1_1
+```
+
+```{r}
+# Slots (variables) inside the Pop class
+getSlots(class(pop1_1))
+```
+
+Note that the `gv` (genetic value) slot contains the total genetic effect on yield, for each individual. (The `pheno` and `ebv` slots seem to be empty.) `fixEff` is always 1.
+
+```{r}
+i1@gv[1:50]
+```
+
+The genetic values are around 0, which makes sense since this is the first generation. They tend to increase in later generations due to selective breeding.
+
+Take a look at the genotype data. `i1@geno` is a list of 10 chromosomes. Each chromosome is a matrix of shape [nLoci by ploidy by nInd], e.g. 358x2x1000
+
+RRBLUP_D2
+
+```{r}
+founderPop = quickHaplo(nInd=2, nChr=1, segSites=10)
+#Set simulation parameters
+SP = SimParam$new(founderPop)
+SP$addTraitA(10)
+
+# Try to get SNP matrix, but doesn't work since SimParams is not set
+pullSnpGeno(pop1_1)
+```
+
+```{r}
+pop1
+```
+
+```{r}
+traitinfo <- readRDS("/home/joshua/Documents/GenomicPred_Recombination/trait_info.RData")
+traitinfo
+```
