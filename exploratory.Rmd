@@ -12,17 +12,14 @@ library(AlphaSimR)
 Read in an example Population RData file.
 
 ```{r}
-pop1 <- readRDS("/home/joshua/Documents/GenomicPred_Recombination/all_pops_gen1.RData")
-```
-
-```{r}
-length(pop1)
+gen1 <- readRDS("data/all_pops_gen1.RData")
 ```
 
 Note that this is a list of 100 Pop objects (simulation runs). Each Pop object contains 1000 rows (individuals) and 17 features.
 
 ```{r}
-pop1_1 <- pop1[[1]]
+length(gen1)
+pop1_1 <- gen1[[1]]
 pop1_1
 ```
 
@@ -33,18 +30,104 @@ getSlots(class(pop1_1))
 
 Note that the `gv` (genetic value) slot contains the total genetic effect on yield, for each individual. (The `pheno` and `ebv` slots seem to be empty.) `fixEff` is always 1.
 
+
 ```{r}
-i1@gv[1:50]
+pop1_1@gv[1:50]
 ```
 
 The genetic values are around 0, which makes sense since this is the first generation. They tend to increase in later generations due to selective breeding.
 
-Take a look at the genotype data. `i1@geno` is a list of 10 chromosomes. Each chromosome is a matrix of shape [nLoci by ploidy by nInd], e.g. 358x2x1000
+Take a look at the genotype data. `pop1_1@geno` is a list of 10 chromosomes. Each chromosome is a matrix of shape [nLoci by ploidy by nInd], e.g. 358x2x1000
+```{r}
+dim(pop1_1@geno)
+```
+```{r}
+dim(pop1_1@geno[[2]])
+```
+```{r}
+set.seed(420)
 
-RRBLUP_D2
+real_centromere <- c(112.1948, 106.0157, 80.47144, 82.66890, 101.1340,
+                     15, 66.1, 66.44142, 67.34964, 60.48587)
+real_centromere <- real_centromere/100
+
+segSites = c(400, 400, 350, 300, 300, 250, 250, 250, 250, 250)
+#founderPop <- quickHaplo(nInd = 1000, nChr = 10, inbred = TRUE, ploidy = 2L, segSites = segSites)
+#SP = SimParam$new(founderPop)
+
+final_map <- readRDS("data/final_map_20000SNPs.RData")
+
+founderPop <- quickHaplo(nInd = 1000, nChr = 10, inbred = TRUE, ploidy = 2L, segSites = segSites)
+founderPop@genMap <- final_map
+founderPop@centromere <- real_centromere
+
+SP = SimParam$new(founderPop)
+SP$addTraitA(250, mean = 0, var = 1)
+# SP$addSnpChip(10) #segSites)
+SP$setTrackRec(TRUE)
+SP$p = 0.15
+  
+#SP$manAddTrait(trait_yield)
+SP$resetPed()
+
+```
+
+Get the matrix of QTL genotype values. (For each individual: allele value at each QTL - causal variant location)
 
 ```{r}
-founderPop = quickHaplo(nInd=2, nChr=1, segSites=10)
+geno <- pullQtlGeno(pop1_1, trait = 1, simParam=SP)
+```
+
+```{r}
+geno[2,]
+```
+
+```{r}
+length(final_map)
+final_map[[1]][1]
+```
+Compute a list of all markers
+
+```{r}
+allMarkers <- c()
+for(i in 1:10) {
+  allMarkers <- c(allMarkers, names(founderPop@genMap[[i]]))
+}
+length(allMarkers)
+```
+
+Compute a list of markers spaced out by "SPACING"
+```{r}
+SPACING <- 10
+#sampledMarkers = c()
+#for(i in 1:10) {
+#  chromMarkers <- names(founderPop@genMap[[i]])
+#  chromMarkers <- chromMarkers[seq(1, length(chromMarkers), SPACING)]
+#  sampledMarkers = c(sampledMarkers, chromMarkers)  #ames(founderPop@genMap[[i]]))
+#}
+sampledMarkers <- allMarkers[seq(1, length(allMarkers), SPACING)]
+length(sampledMarkers)
+```
+
+```{r}
+snp_geno <- pullMarkerGeno(pop1_1, markers=sampledMarkers, simParam=SP)
+```
+
+```{r}
+train_end = 0.8*dim(snp_geno)[1]
+test_start = train_end + 1
+test_end = dim(snp_geno)[1]
+train_set <- snp_geno[1:n_train,]
+test_set <- snp_geno[test_start:test_end,]
+dim(train_set)
+dim(test_set)
+```
+
+
+IGNORE THE BELOW
+
+```{r}
+founderPop = quickHaplo(nInd=2, nChr=1, segSites=1000)
 #Set simulation parameters
 SP = SimParam$new(founderPop)
 SP$addTraitA(10)
@@ -54,10 +137,15 @@ pullSnpGeno(pop1_1)
 ```
 
 ```{r}
-pop1
+SP = SimParam$new(gen1[[1]])
 ```
 
 ```{r}
-traitinfo <- readRDS("/home/joshua/Documents/GenomicPred_Recombination/trait_info.RData")
-traitinfo
+geno <- pullQtlGeno(pop1_1, trait=1)
+geno
+```
+
+```{r}
+traitinfo <- readRDS("data/trait_info.RData")
+traitinfo@lociLoc[2500]
 ```
