@@ -42,7 +42,7 @@ Take a look at the genotype data. `pop1_1@geno` is a list of 10 chromosomes. Eac
 dim(pop1_1@geno)
 ```
 ```{r}
-dim(pop1_1@geno[[2]])
+dim(pop1_1@geno[[1]])
 ```
 ```{r}
 set.seed(420)
@@ -72,21 +72,25 @@ SP$resetPed()
 
 ```
 
-Get the matrix of QTL genotype values. (For each individual: allele value at each QTL - causal variant location)
+Get the matrix of QTL genotype values. (For each individual: allele value at each QTL - causal variant location).
+Dimensions: [individuals x QTLs], e.g. [1000 x 2500]
 
 ```{r}
 geno <- pullQtlGeno(pop1_1, trait = 1, simParam=SP)
 ```
 
 ```{r}
-geno[2,]
+dim(geno)
+#geno[2,]
 ```
+Genetic map. Contains ALL 20000 SNPs, including QTL (which causally impact trait) and other markers (unrelated mutations). The value at each index contains the distance in MORGANS from the start of the chromosome.
 
 ```{r}
 length(final_map)
-final_map[[1]][1]
+length(final_map[[1]])
+final_map[[2]]
 ```
-Compute a list of all markers
+Compute a list of all markers (excluding QTL). Total of 16894.
 
 ```{r}
 allMarkers <- c()
@@ -117,7 +121,7 @@ snp_geno <- pullMarkerGeno(pop1_1, markers=sampledMarkers, simParam=SP)
 train_end = 0.8*dim(snp_geno)[1]
 test_start = train_end + 1
 test_end = dim(snp_geno)[1]
-train_set <- snp_geno[1:n_train,]
+train_set <- snp_geno[1:train_end,]
 test_set <- snp_geno[test_start:test_end,]
 dim(train_set)
 dim(test_set)
