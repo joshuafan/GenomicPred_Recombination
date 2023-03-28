@@ -1,155 +1,336 @@
 ---
-title: "Exploratory Analysis of Genomic Prediction / Recombination data"
+title: "Exploratory Analysis of Genomic Selection Data"
 output: html_notebook
 ---
 
-Import the AlphaSimR package.
+(If not already installed, install packages)
+```{r}
+install.packages('AlphaSimR')
+install.packages("glmnet", repos = "https://cran.us.r-project.org")
+install.packages('Metrics')
+```
 
+Import packages
 ```{r}
 library(AlphaSimR)
+library(glmnet)
+library(Metrics)
+library(data.table)
+```
+Load SimParams into the "SP" variable
+```{r}
+load("data/SimParam_sims")
 ```
 
-Read in an example Population RData file.
-
+Load data from different generations. Each `genX` object is a large Pop with 1000 individuals.
 ```{r}
-gen1 <- readRDS("data/all_pops_gen1.RData")
-```
-
-Note that this is a list of 100 Pop objects (simulation runs). Each Pop object contains 1000 rows (individuals) and 17 features.
-
-```{r}
-length(gen1)
-pop1_1 <- gen1[[1]]
-pop1_1
-```
-
-```{r}
-# Slots (variables) inside the Pop class
-getSlots(class(pop1_1))
-```
-
-Note that the `gv` (genetic value) slot contains the total genetic effect on yield, for each individual. (The `pheno` and `ebv` slots seem to be empty.) `fixEff` is always 1.
-
-
-```{r}
-pop1_1@gv[1:50]
-```
-
-The genetic values are around 0, which makes sense since this is the first generation. They tend to increase in later generations due to selective breeding.
-
-Take a look at the genotype data. `pop1_1@geno` is a list of 10 chromosomes. Each chromosome is a matrix of shape [nLoci by ploidy by nInd], e.g. 358x2x1000
-```{r}
-dim(pop1_1@geno)
-```
-```{r}
-dim(pop1_1@geno[[1]])
-```
-```{r}
-set.seed(420)
-
-real_centromere <- c(112.1948, 106.0157, 80.47144, 82.66890, 101.1340,
-                     15, 66.1, 66.44142, 67.34964, 60.48587)
-real_centromere <- real_centromere/100
-
-segSites = c(400, 400, 350, 300, 300, 250, 250, 250, 250, 250)
-#founderPop <- quickHaplo(nInd = 1000, nChr = 10, inbred = TRUE, ploidy = 2L, segSites = segSites)
-#SP = SimParam$new(founderPop)
-
-final_map <- readRDS("data/final_map_20000SNPs.RData")
-
-founderPop <- quickHaplo(nInd = 1000, nChr = 10, inbred = TRUE, ploidy = 2L, segSites = segSites)
-founderPop@genMap <- final_map
-founderPop@centromere <- real_centromere
-
-SP = SimParam$new(founderPop)
-SP$addTraitA(250, mean = 0, var = 1)
-# SP$addSnpChip(10) #segSites)
-SP$setTrackRec(TRUE)
-SP$p = 0.15
-  
-#SP$manAddTrait(trait_yield)
-SP$resetPed()
-
-```
-
-Get the matrix of QTL genotype values. (For each individual: allele value at each QTL - causal variant location).
-Dimensions: [individuals x QTLs], e.g. [1000 x 2500]
-
-```{r}
-geno <- pullQtlGeno(pop1_1, trait = 1, simParam=SP)
-```
-
-```{r}
-dim(geno)
-#geno[2,]
-```
-Genetic map. Contains ALL 20000 SNPs, including QTL (which causally impact trait) and other markers (unrelated mutations). The value at each index contains the distance in MORGANS from the start of the chromosome.
-
-```{r}
-length(final_map)
-length(final_map[[1]])
-final_map[[2]]
-```
-Compute a list of all markers (excluding QTL). Total of 16894.
-
-```{r}
-allMarkers <- c()
-for(i in 1:10) {
-  allMarkers <- c(allMarkers, names(founderPop@genMap[[i]]))
+gens <- list()
+for (g in 1:10) {
+  gens[[g]] <- readRDS(paste0("data/all_pops_gen", g, ".RData"))
 }
-length(allMarkers)
 ```
 
-Compute a list of markers spaced out by "SPACING"
+For interest, plot the R^2 between GV (genetic value) and phenotype, for different generations.
+This would be the best possible predictor of the phenotype. The R^2 are in the 0.6-0.7 range, so much of the variance in phenotype is determined by genetics.
 ```{r}
+corr <- cor(gen1@gv, gen1@pheno)^2
+plot(gen1@gv, gen1@pheno)
+abline(lm(gen1@pheno~gen1@gv), col="red")
+legend("topleft", legend=paste("R^2:", format(corr, digits=4)))
+
+corr <- cor(gen2@gv, gen2@pheno)^2
+plot(gen2@gv, gen2@pheno)
+abline(lm(gen2@pheno~gen2@gv), col="red")
+legend("topleft", legend=paste("R^2:", format(corr, digits=4)))
+
+corr <- cor(gen5@gv, gen5@pheno)^2
+plot(gen5@gv, gen5@pheno)
+abline(lm(gen5@pheno~gen5@gv), col="red")
+legend("topleft", legend=paste("R^2:", format(corr, digits=4)))
+```
+
+
+Open the final genetic map. This is a list of 10 chromosomes. Each chromosome contains a labeled list of genetic map positions (in MORGANS) for each *MARKER* (excluding QTL). Note this may not be needed, the `pos` column of the recombrate files give the same info.
+```{r}
+final_genetic_map <- readRDS("data/Final_genetic_map.RData")
+final_genetic_map[[10]][1400:1410]
+```
+
+For each chromosome: open the file containing physical position & recombination rate of each marker (excluding QTL).
+
+```{r}
+all_marker_info <- list()
+
+# Loop through all chromosomes
+for (chromNo in 1:length(final_genetic_map)) {
+  # Read file containing physical pos and recomb rate
+  chrom_recombrate <- read.table(paste0("data/Chr", chromNo, "_SNP_recombrate.txt"), header=TRUE, sep='\t')
+
+  # Corrections to the file
+  chrom_recombrate$SNP.End <- chrom_recombrate$SNP.End / 1000000 # convert from bases to megabases
+  if (chromNo == 1) {
+    chrom_recombrate$pos <- chrom_recombrate$pos * 100  # convert from morgans to centimorgans
+    chrom_recombrate <- subset(chrom_recombrate, select = -c(pos2))  # remove the pos2 column
+  }
+
+  # Add column with marker id (e.g. 1_50, where 1 is chromosome number and 50 is
+  # the index of the marker within the chromosome)
+  chrom_recombrate$marker_id <- paste(chromNo, seq.int(nrow(chrom_recombrate)), sep="_")
+  all_marker_info[[chromNo]] <- chrom_recombrate
+
+  # Plot genetic map position vs. physical position
+  plot(chrom_recombrate$SNP.Start, chrom_recombrate$pos, 
+       main=paste("Chrom", chromNo, "- Genetic map position vs. physical position"), 
+       xlab="Physical position (Mb)", ylab="Genetic map position (cM)")
+
+  # Plot recombination rate vs. physical position
+  plot(chrom_recombrate$SNP.Start, chrom_recombrate$rate,
+       main=paste("Chrom", chromNo, "- Recombination rate vs physical position"),
+       xlab="Physical position (Mb)", ylab="Recombination rate")
+
+    # Plot recombination rate vs. genetic map position
+  plot(chrom_recombrate$pos, chrom_recombrate$rate,
+       main=paste("Chrom", chromNo, "- Recombination rate vs genetic map position"),
+       xlab="Genetic map position (cM)", ylab="Recombination rate")
+}
+
+all_marker_info <- rbindlist(all_marker_info)
+```
+Compute list of all markers (excluding QTL), as well as list of markers separated by SPACING.
+
+```{r}
+all_markers <- all_marker_info$marker_id
 SPACING <- 10
-#sampledMarkers = c()
-#for(i in 1:10) {
-#  chromMarkers <- names(founderPop@genMap[[i]])
-#  chromMarkers <- chromMarkers[seq(1, length(chromMarkers), SPACING)]
-#  sampledMarkers = c(sampledMarkers, chromMarkers)  #ames(founderPop@genMap[[i]]))
-#}
-sampledMarkers <- allMarkers[seq(1, length(allMarkers), SPACING)]
-length(sampledMarkers)
+sampled_markers <- all_markers[seq(1, length(all_markers), SPACING)]
+length(all_markers)
+length(sampled_markers)
+sampled_markers[1:20]
+all_markers[(2860+1961):(2860+1961+10)]
 ```
 
-```{r}
-snp_geno <- pullMarkerGeno(pop1_1, markers=sampledMarkers, simParam=SP)
-```
+Get the matrix of markers that we have genotype data for.
+This is what is used for genomic prediction.
+
+Formally, let $x_{ij}$ be individual $i$'s value for marker $j$.
+$$x_{ij} \in \{0, 1, 2\}$$, depending on the number of copies of the dominant
+allele in of the 2 copies of the chromosome.
+
+Stack all $x_{ij}$ into a matrix $$X \in \mathbb{R}^{n \times p}$$, where $n$
+is the number of individuals and $p$ is the number of markers.
 
 ```{r}
-train_end = 0.8*dim(snp_geno)[1]
+# In "markers", specify which markers to sequence
+snp_genos <- list()
+snp_haplos <- list()
+for (g in 1:10) {
+  snp_genos[[g]] <- pullMarkerGeno(gens[[g]], markers=all_markers, simParam=SP)
+  snp_haplos[[g]] <- pullMarkerHaplo(gens[[g]], markers=all_markers, simParam=SP)
+}
+snp_geno1 <- snp_genos[[1]]
+snp_haplo1 <- snp_haplos[[1]]
+```
+
+Inspect the SNP geno data
+```{r}
+snp_geno_centered <- (snp_geno1 + 1) %/% 2 #scale(snp_geno, center=TRUE, scale=FALSE)
+dim(snp_geno1)
+snp_geno_centered[1, 1500:1510]
+snp_geno_centered[2, 1500:1510]
+snp_geno_centered[3, 1500:1510]
+snp_geno_centered[4, 1500:1510]
+snp_geno_centered[5, 1500:1510]
+snp_geno_centered[6, 1500:1510]
+snp_geno_centered[7, 1500:1510]
+snp_geno_centered[8, 1500:1510]
+snp_geno_centered[9, 1500:1510]
+snp_geno_centered[10, 1500:1510]
+```
+Inspect the haplo/geno data
+```{r}
+snp_haplo1[1:10, 1000:1010]
+snp_geno1[1:10, 1000:1010]
+```
+
+Function to calculate LD between two markers.
+
+```{r}
+calcLD <- function(geno, m1, m2) {
+  pA = mean(geno[,m1] >= 1)
+  pB = mean(geno[,m2] >= 1)
+  pAB = mean((geno[,m1] >= 1) & (geno[,m2] >= 1))
+  D = pAB - pA*pB
+  print(paste("pA", pA, "pB", pB, "pA*pB", pA*pB, "pAB", pAB))
+  print(paste("Both positive", mean((geno[,m1] >= 1) & (geno[,m2] >= 1))))
+  print(paste("A pos/B neg", mean((geno[,m1] >= 1) & (geno[,m2] < 1))))
+  print(paste("A neg/B pos", mean((geno[,m1] < 1) & (geno[,m2] >= 1))))
+  print(paste("Both negative", mean((geno[,m1] < 1) & (geno[,m2] < 1))))
+
+  return(D^2 / (pA * (1-pA) * pB * (1-pB)))
+}
+
+# Calculate normalized LD (Lewontin's measure), described here:
+# https://en.wikipedia.org/wiki/Linkage_disequilibrium#Measures_derived_from_D
+# geno[,m1] and geno[,m2] are assumed to be binary 0/1.
+calcLDNormalized <- function(geno, m1, m2) {
+  pA <- mean(geno[,m1] >= 1)
+  pB <- mean(geno[,m2] >= 1)
+  pAB <- mean((geno[,m1] >= 1) & (geno[,m2] >= 1))
+  D <- pAB - pA * pB
+  if (D < 0) {
+    Dmax <- max(-pA*pB, -(1-pA)*(1-pB))
+  } else {
+    Dmax <- min(pA*(1-pB), (1-pA)*pB)
+  }
+  return(D / Dmax)
+}
+
+calcLD(snp_haplo1, "1_1510", "1_1511")
+cor(snp_haplo1[,"1_1510"], snp_haplo1[,"1_1511"])^2
+calcLDNormalized(snp_haplo1, "1_1510", "1_1511")
+snp_haplo1[1:4, 1:10]
+all_marker_info[1:20]
+```
+For each marker, compute probability of 0. Plot histogram.
+```{r}
+#snp_geno_centered <- (snp_geno1 + 1) %/% 2
+p0 <- colMeans(snp_haplo1 == 0)
+length(p0)
+hist(p0)
+p0[1000:1020]
+```
+
+
+Calculate squared correlations between marker 1_1000 and every other marker.
+
+```{r}
+#snp_geno_centered <- (snp_geno1 + 1) %/% 2
+interMarkerR2 <- c()
+genMapDistances <- c()
+physicalDistances <- c()
+ANCHOR_MARKER <- "1_1000"
+ANCHOR_MARKER_NO = as.integer(unlist(strsplit(ANCHOR_MARKER, "_"))[2])
+for (i in 1:length(all_markers)) {
+  m <- all_markers[i]
+  chromNo <- as.integer(unlist(strsplit(m, "_"))[1])
+  markerNo <- as.integer(unlist(strsplit(m, "_"))[2])
+  if (chromNo != 1) {  #} || mean(snp_haplo1[, m]) <= 0.4 || mean(snp_haplo1[, m]) >= 0.6) {
+    next
+  }
+  r2 <- calcLDNormalized(snp_haplo1, ANCHOR_MARKER, m)  # cor(snp_haplo1[, ANCHOR_MARKER], snp_haplo1[, m])^2  #  calcLDNormalized(snp_haplo1, ANCHOR_MARKER, m)  #  # cor(snp_haplo1[, ANCHOR_MARKER], snp_haplo1[, m])^2  # calcLD(snp_geno, "1_500", m)  #
+  anchor_gen_map_pos <- all_marker_info[all_marker_info$marker_id == ANCHOR_MARKER]$pos
+  gen_map_dist <- abs(all_marker_info[i]$pos - anchor_gen_map_pos)
+  anchor_physical_pos <- all_marker_info[all_marker_info$marker_id == ANCHOR_MARKER]$SNP.Start
+  physical_dist <- abs(all_marker_info[i]$SNP.Start - anchor_physical_pos)
+
+  if (markerNo > ANCHOR_MARKER_NO - 10 && markerNo < ANCHOR_MARKER_NO + 10) {
+    print(paste("Marker", m, "Index", i, "genmap", all_marker_info[i]$pos, "physpos", all_marker_info[i]$SNP.Start, "genmapdist", gen_map_dist, "physdist", physical_dist, "r2", r2))
+  }
+
+  interMarkerR2 <- c(interMarkerR2, r2)
+  genMapDistances <- c(genMapDistances, gen_map_dist)
+  physicalDistances <- c(physicalDistances, physical_dist)
+}
+plot(genMapDistances, interMarkerR2, 
+     main=paste("Normalized LD with marker", ANCHOR_MARKER, "vs genetic map distance (gen 1)"), 
+     xlab="Genetic map distance (cM)", ylab="Normalized LD")
+abline(lm(interMarkerR2~genMapDistances), col="red")
+legend("topright", legend=paste("Corr:", format(cor(genMapDistances, interMarkerR2), digits=4)))
+plot(physicalDistances, interMarkerR2, 
+     main=paste("Normalized LD with marker", ANCHOR_MARKER, "vs physical distance (gen 1)"), 
+     xlab="Physical distance (MB)", ylab="Normalized LD")
+
+```
+
+
+TODO:
+fit genomic prediction model on generation 1, see performance on later generation n
+compare with fitting on generation n-1
+with some probability, replace marker value with random when training. To compute the probability, first estimate the "LD radius" of the marker (how far out could the causal QTL be), and then integrate.
+
+Train/test split
+```{r}
+# Compute train-test split indices
+train_end = 0.8*dim(snp_genos[[1]])[1]
 test_start = train_end + 1
-test_end = dim(snp_geno)[1]
-train_set <- snp_geno[1:train_end,]
-test_set <- snp_geno[test_start:test_end,]
-dim(train_set)
-dim(test_set)
+test_end = dim(snp_genos[[1]])[1]
+
+# Produce X_train/X_test/Y_train/Y_test
+X_trains <- list()
+X_tests <- list()
+Y_trains <- list()
+Y_tests <- list()
+
+for (g in 1:10) {
+  X_trains[[g]] <- snp_genos[[g]][1:train_end,]
+  X_tests[[g]] <- snp_genos[[g]][test_start:test_end,]
+  Y_g <- gens[[g]]@pheno[1:1000]
+  Y_trains[[g]] <- Y_g[1:train_end]
+  Y_tests[[g]] <- Y_g[test_start:test_end]
+}
+
+dim(X_trains[[1]])
+dim(X_tests[[1]])
+length(Y_trains[[1]])
+length(Y_tests[[1]])
+```
+
+Baseline GLM model
+```{r}
+
+plot_acc_by_generation <- function(model) {
+  train_corrs <- list()
+  test_corrs <- list()
+  gen_numbers <- 1:10
+  for (g in gen_numbers) {
+    pred_train_g <- predict(model, newx = X_trains[[g]], s = "lambda.min")
+    pred_test_g <- predict(model, newx = X_tests[[g]], s = "lambda.min")
+    train_corrs[[g]] <- format(cor(Y_trains[[g]], pred_train_g), digits=3)
+    test_corrs[[g]] <- format(cor(Y_tests[[g]], pred_test_g), digits=3)
+    print(paste("Generation", g, "Train corr", train_corrs[[g]], "Test corr", test_corrs[[g]]))
+  }
+  plot(gen_numbers, train_corrs, type = "b", pch = 19, 
+       col = "red", xlab = "Gen", ylab = "Corr")
+  lines(gen_numbers, test_corrs, pch = 18, col = "blue", type = "b", lty = 2)
+  legend("topright", legend=c("Train corr", "Test corr"),
+         col=c("red", "blue"), lty = 1:2)  #, cex=0.8)
+}
+
+cvfit <- cv.glmnet(X_trains[[1]], Y_trains[[1]])
+plot_acc_by_generation(cvfit)
+
+plot(cvfit)
+```
+GLM with penalty
+```{r}
+# Collect recombination rates for each marker
+recomb_rates <- all_marker_info$rate
+length(recomb_rates)
+
+max_recomb <- quantile(recomb_rates, 0.9)
+min_recomb <- quantile(recomb_rates, 0.1)
+# Clip off recomb rate outliers
+recomb_rates[recomb_rates > max_recomb] <- max_recomb
+recomb_rates <- (1 - (1 - recomb_rates)^8)
+hist(recomb_rates)
+recomb_rates <- recomb_rates + 0.5
+# penalty.factor = differential shrinkage
+pfit <- cv.glmnet(X_trains[[1]], Y_trains[[1]], penalty.factor = recomb_rates)
+plot_acc_by_generation(pfit)
+plot(pfit)
+
 ```
 
 
-IGNORE THE BELOW
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
 
 ```{r}
-founderPop = quickHaplo(nInd=2, nChr=1, segSites=1000)
-#Set simulation parameters
-SP = SimParam$new(founderPop)
-SP$addTraitA(10)
-
-# Try to get SNP matrix, but doesn't work since SimParams is not set
-pullSnpGeno(pop1_1)
+plot(cars)
 ```
 
-```{r}
-SP = SimParam$new(gen1[[1]])
-```
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
 
-```{r}
-geno <- pullQtlGeno(pop1_1, trait=1)
-geno
-```
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
 
-```{r}
-traitinfo <- readRDS("data/trait_info.RData")
-traitinfo@lociLoc[2500]
-```
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
